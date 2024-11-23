@@ -34,4 +34,4 @@ The script will only work for text or link url notes and not for pictures, due t
 - Type identification (Type 0 contains text content, Type 1 contains images, Type 5 contains bullet points, Type 6 contains thumbnails)
 - Store images in a directory identified by the MemoId (ie, MemoId/images)
 - Updated the authentication method to use a Google master_token (because the username/password, CAPTCHA method is obsolete)
-- Used DictReader to read rows by keys defined in lqm2csv.pv
+- Used DictReader to read rows by keys defined in lqm2csv.py
