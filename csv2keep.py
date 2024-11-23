@@ -1,43 +1,43 @@
 #!/usr/bin/env python
 import gkeepapi,keyring,csv
 
-# Change with your gmail and password!
-username='xxxxxxxxxxx@gmail.com'
-password='your-password'
+# Use your gmail address!
+username='<your email address>@gmail.com'
 # Change with the directory where notes.csv is located. Default to current.
 path='.'
-# Google blocks too frequent api calls, set the limit of notes to process at a time (default set to 50).
+# Google blocks too frequent api calls, set the limit of notes to process at a time.
+# The initial implementation had the default set to 50. I reduced to 25.
 # The program will stop every X note creation and resume through user input.
-ratelimit=50
+ratelimit=25
 
+# The initial implementation had a username/password authentication scheme.
+# https://github.com/deviato/lqm-to-google-keep/blob/main/csv2keep.py#L21
+# Unfortunately, that method is obsolete. Use master_token instead. 
+
+# Get the master token by https://github.com/simon-weber/gpsoauth#alternative-flow
+master_token = '<your Google master_token>'
 keep=gkeepapi.Keep()
-token=keyring.get_password('google-keep-token',username)
-if token:
-  print('Authenticating with resume token...')
-  keep.resume(username,token)
-else:
-  print('Authenticating with username and password...')
-  try:
-    success=keep.login(username,password)
-  except:
-    print('\n *** Please open this link in a browser to enable permissions: https://accounts.google.com/b/0/DisplayUnlockCaptcha ***\n')
-    raise
-  token=keep.getMasterToken()
-  keyring.set_password('google-keep-token', username, token)
 
+print('Authenticating with username and master_token...')
+success=keep.authenticate(username,master_token)
+token=keep.getMasterToken()
+keyring.set_password('google-keep-token', username, token)
 print('Auth OK')
-with open(path+'/notes.csv') as notes:
-  reader=csv.reader(notes)
+
+# Using utf-8 to match how csv file was written
+with open(path+'/notes.csv','r', encoding="utf-8") as notes:
+  # DictReader allows reading by keys defined in lqm2csv.py
+  reader=csv.DictReader(notes)
   cnt=0
   next(reader)
   for row in reader:
-    # Create a note with CreationDate as title, and ImageTitle + BrowserURL + DescRaw as content. You can change the fields
+    # Create a note with CreationDate as title + BrowserURL + DescRaw as content. You can change the fields
     # to your needs. Unfortunately gkeep api doesn't support image uploading, so you only have a reference.
-    title=row[0]
+    title=row["CreationDate"]
     text=''
-    if row[1]: text=row[1]+'\n'
-    if row[2]: text=text+row[2]+'\n'
-    text=text+row[3]
+    #if row["PreviewImage"]: text=row["PreviewImage"]+'\n'
+    if row["BrowserURL"]: text=text+row["BrowserURL"]+'\n'
+    text=text+row["DescRaw"]
 
     cnt=cnt+1
     print(cnt,title)
