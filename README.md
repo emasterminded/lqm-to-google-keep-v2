@@ -22,7 +22,7 @@ $ pip install gkeepapi keyring
    ```
    $ python csv2keep
    ```
-   -The first time it tries to authenticate, Google could throw an error, visit the link provided by the script to bypass it.- This method is obsolete. Authentication is handled by a master_token in this version.
+   ~~The first time it tries to authenticate, Google could throw an error, visit the link provided by the script to bypass it.~~ This method is obsolete. Authentication is handled by a master_token in this version.
 6. The program will stop every 25 memos creation (you may change this value, the initial default was 50). Check online on keep.google.com if they're ok, then press Enter to resume the script. Don't do it too quickly, or Google will block you with a Rate Limit Exceeded error.
 # Limitations #
 The script will only work for text or link url notes and not for pictures, due to limitation of gkeep api. For these notes you'll only get a file reference in the memo, and all physical files in **<MemoId>/images** directory.
