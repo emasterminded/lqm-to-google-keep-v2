@@ -1,0 +1,7 @@
+# Python bytecode left behind by running the scripts or tests
+__pycache__/
+
+# Your own memos: QuickMemo+ exports, the generated csv, and <MemoId>/images folders
+*.lqm
+notes.csv
+/[0-9]*/
