@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 
-from test_units import NOON_2023_05_10_MS, make_lqm
+from test_units import NOON_2023_05_10_MS, csv2keep, make_lqm
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -74,6 +74,8 @@ def delete_password(service, user):
 
 
 class EndToEndTests(unittest.TestCase):
+    """One workflow per feature: convert + import, saved-token recovery, rate-limit pause."""
+
     def setUp(self):
         self.work = tempfile.mkdtemp()
         fakes = tempfile.mkdtemp()
@@ -90,19 +92,14 @@ class EndToEndTests(unittest.TestCase):
             FAKE_KEYRING_FILE=self.keyring_file,
             KEEP_EMAIL="me@gmail.com",
         )
-        self.make_exports()
 
-    def make_exports(self):
-        memos = (
-            (1, [{"Type": 0, "DescRaw": "first memo"}], ()),
-            (2, [{"Type": 0, "DescRaw": "List"}, {"Type": 5, "DescRaw": "eggs"}], ()),
-            (3, [{"Type": 1, "FileName": "p.jpg"}], ("p.jpg",)),
-        )
+    def make_exports(self, memos):
+        """memos: (MemoId, objects, image file names) per .lqm file."""
         for memo_id, objects, images in memos:
             memo = {"Id": memo_id, "CreatedTime": NOON_2023_05_10_MS}
-            make_lqm(self.work, f"memo{memo_id}.lqm", memo, objects, images)
+            make_lqm(self.work, f"memo{memo_id:02}.lqm", memo, objects, images)
 
-    def run_script(self, name, token):
+    def run_script(self, name, token=""):
         env = dict(self.env, KEEP_MASTER_TOKEN=token)
         return subprocess.run(
             [sys.executable, os.path.join(REPO_ROOT, name)],
@@ -116,30 +113,65 @@ class EndToEndTests(unittest.TestCase):
         with open(self.keep_log, encoding="utf-8") as handle:
             return [json.loads(line) for line in handle]
 
-    def test_all_memos_reach_keep_and_token_is_saved(self):
-        converted = self.run_script("lqm2csv.py", "")
+    def notes(self):
+        return [entry["note"] for entry in self.keep_entries() if "note" in entry]
+
+    def saved_tokens(self):
+        if not os.path.exists(self.keyring_file):
+            return {}
+        with open(self.keyring_file, encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_memos_are_converted_and_imported_and_rerun_reuses_saved_token(self):
+        self.make_exports((
+            (1, [{"Type": 0, "DescRaw": "first memo"}], ()),
+            (2, [{"Type": 0, "DescRaw": "List"}, {"Type": 5, "DescRaw": "eggs"}], ()),
+            (3, [{"Type": 1, "FileName": "p.jpg"}], ("p.jpg",)),
+        ))
+        converted = self.run_script("lqm2csv.py")
         self.assertEqual(converted.returncode, 0, converted.stderr)
         self.assertTrue(os.path.isfile(os.path.join(self.work, "3", "images", "p.jpg")))
 
         imported = self.run_script("csv2keep.py", "good-token")
         self.assertEqual(imported.returncode, 0, imported.stderr)
-        notes = [entry["note"] for entry in self.keep_entries() if "note" in entry]
-        self.assertEqual(notes, [
+        expected = [
             ["1_2023-05-10", "first memo"],
             ["2_2023-05-10", "List\n• eggs\n"],
             ["3_2023-05-10", "\np.jpg\n"],
-        ])
+        ]
+        self.assertEqual(self.notes(), expected)
         self.assertEqual(self.keep_entries()[-1], {"sync": True})
-        with open(self.keyring_file, encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle), {"google-keep-token|me@gmail.com": "good-token"})
+        self.assertEqual(self.saved_tokens(), {"google-keep-token|me@gmail.com": "good-token"})
 
-    def test_bad_token_stops_before_creating_any_note(self):
-        self.run_script("lqm2csv.py", "")
-        imported = self.run_script("csv2keep.py", "wrong-token")
+        # Later runs need only the address: no KEEP_MASTER_TOKEN, nothing typed.
+        rerun = self.run_script("csv2keep.py")
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertEqual(self.notes(), expected * 2)
+
+    def test_rejected_saved_token_is_removed_and_no_note_is_created(self):
+        self.make_exports(((1, [{"Type": 0, "DescRaw": "memo"}], ()),))
+        with open(self.keyring_file, "w", encoding="utf-8") as handle:
+            json.dump({"google-keep-token|me@gmail.com": "stale-token"}, handle)
+        self.run_script("lqm2csv.py")
+        imported = self.run_script("csv2keep.py", "good-token")
         self.assertEqual(imported.returncode, 1)
         self.assertIn("Login failed for me@gmail.com", imported.stderr)
         self.assertEqual(self.keep_entries(), [])
+        self.assertEqual(self.saved_tokens(), {})
 
+    def test_import_syncs_and_pauses_after_every_rate_limit_notes(self):
+        count = csv2keep.RATE_LIMIT + 1
+        self.make_exports(
+            (n, [{"Type": 0, "DescRaw": f"memo {n}"}], ()) for n in range(1, count + 1)
+        )
+        self.run_script("lqm2csv.py")
+        imported = self.run_script("csv2keep.py", "good-token")
+        self.assertEqual(imported.returncode, 0, imported.stderr)
+        self.assertEqual(imported.stdout.count("press Enter to continue"), 1)
+        entries = self.keep_entries()
+        self.assertEqual(entries[csv2keep.RATE_LIMIT], {"sync": True})
+        self.assertEqual(len(self.notes()), count)
+        self.assertEqual(entries[-1], {"sync": True})
 
 if __name__ == "__main__":
     unittest.main()

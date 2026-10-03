@@ -4,6 +4,7 @@ Run from the repository root with:  python -m unittest discover tests
 No Google account and no third-party packages are needed: gkeepapi and
 keyring are replaced by in-memory fakes.
 """
+import codecs
 import csv
 import json
 import os
@@ -145,7 +146,9 @@ class DescribeObjectsTests(unittest.TestCase):
         self.assertEqual(lqm2csv.describe_objects(objects), "\n• \n")
 
 
-class ConvertFolderTests(unittest.TestCase):
+class TempFolderTestCase(unittest.TestCase):
+    """Works in a temp folder while the cwd is a different, empty folder."""
+
     def setUp(self):
         self.folder = tempfile.mkdtemp()
         self.other_cwd = tempfile.mkdtemp()
@@ -155,8 +158,44 @@ class ConvertFolderTests(unittest.TestCase):
     def tearDown(self):
         os.chdir(self.old_cwd)
 
+
+class ExtractImagesTests(TempFolderTestCase):
+    def test_only_named_image_objects_are_extracted_into_memo_id_folder(self):
+        objects = [
+            {"Type": 0, "DescRaw": "text"},
+            {"Type": 1},
+            {"Type": 6, "FileName": "thumb.jpg"},
+            {"Type": 1, "FileName": "p.jpg"},
+        ]
+        path = make_lqm(self.folder, "a.lqm", {}, objects, images=["p.jpg", "thumb.jpg"])
+        with ZipFile(path) as archive:
+            lqm2csv.extract_images(archive, 7, objects, self.folder)
+        images = os.path.join(self.folder, "7", "images")
+        self.assertEqual(os.listdir(images), ["p.jpg"])
+
+
+class ConvertMemoTests(TempFolderTestCase):
+    def test_row_is_title_url_and_text_and_images_go_to_the_given_folder(self):
+        memo = {"Id": 5, "CreatedTime": NOON_2023_05_10_MS, "BrowserUrl": "http://a"}
+        objects = [{"Type": 0, "DescRaw": "hi"}, {"Type": 1, "FileName": "p.jpg"}]
+        path = make_lqm(self.folder, "a.lqm", memo, objects, images=["p.jpg"])
+        row = lqm2csv.convert_memo(path, self.folder)
+        self.assertEqual(row, ["5_2023-05-10", "http://a", "hi\np.jpg\n"])
+        self.assertTrue(os.path.isfile(os.path.join(self.folder, "5", "images", "p.jpg")))
+
+    def test_memo_without_object_list_gives_empty_text(self):
+        memo = {"Id": 6, "CreatedTime": NOON_2023_05_10_MS}
+        path = make_lqm(self.folder, "a.lqm", memo, None)
+        self.assertEqual(lqm2csv.convert_memo(path, self.folder), ["6_2023-05-10", None, ""])
+
+
+class ConvertFolderTests(TempFolderTestCase):
     def csv_path(self):
         return os.path.join(self.folder, lqm2csv.CSV_NAME)
+
+    def read_raw_csv(self):
+        with open(self.csv_path(), "rb") as handle:
+            return handle.read()
 
     def test_reads_lqm_files_from_folder_that_is_not_the_cwd(self):
         memo = {"Id": 1, "CreatedTime": NOON_2023_05_10_MS, "BrowserUrl": "http://a"}
@@ -174,30 +213,21 @@ class ConvertFolderTests(unittest.TestCase):
         lqm2csv.convert_folder(self.folder)
         self.assertEqual(csv2keep.read_rows(self.csv_path()), [])
 
-    def test_extracts_images_into_memo_id_folder(self):
-        memo = {"Id": 7, "CreatedTime": NOON_2023_05_10_MS}
-        objects = [{"Type": 1, "FileName": "p.jpg"}]
-        make_lqm(self.folder, "b.lqm", memo, objects, images=["p.jpg"])
-        lqm2csv.convert_folder(self.folder)
-        image = os.path.join(self.folder, "7", "images", "p.jpg")
-        self.assertTrue(os.path.isfile(image))
-
     def test_rows_end_in_single_crlf_not_doubled_cr(self):
         memo = {"Id": 3, "CreatedTime": NOON_2023_05_10_MS}
         make_lqm(self.folder, "c.lqm", memo, [{"Type": 0, "DescRaw": "one\ntwo"}])
         lqm2csv.convert_folder(self.folder)
-        with open(self.csv_path(), "rb") as handle:
-            raw = handle.read()
+        raw = self.read_raw_csv()
         self.assertNotIn(b"\r\r\n", raw)
         self.assertIn(b'"one\ntwo"\r\n', raw)
 
-    def test_multi_line_text_survives_the_round_trip(self):
+    def test_csv_is_utf8_with_byte_order_mark_for_excel(self):
         memo = {"Id": 4, "CreatedTime": NOON_2023_05_10_MS}
-        objects = [{"Type": 0, "DescRaw": "café \nline two"}]
-        make_lqm(self.folder, "d.lqm", memo, objects)
+        make_lqm(self.folder, "d.lqm", memo, [{"Type": 0, "DescRaw": "caf\u00e9\u202f"}])
         lqm2csv.convert_folder(self.folder)
-        rows = csv2keep.read_rows(self.csv_path())
-        self.assertEqual(rows[0]["DescRaw"], "café \nline two")
+        raw = self.read_raw_csv()
+        self.assertTrue(raw.startswith(codecs.BOM_UTF8))
+        self.assertIn("caf\u00e9\u202f".encode("utf-8"), raw)
 
     def test_returns_one_file_and_title_pair_per_memo_in_name_order(self):
         for memo_id, name in ((9, "z.lqm"), (8, "a.lqm")):
@@ -312,23 +342,20 @@ class LoginTests(unittest.TestCase):
         csv2keep.login(FakeKeep(), "me@gmail.com", "good-token", False)
         self.assertEqual(self.saved_token(), "good-token")
 
-    def test_rejected_login_stops_with_a_clear_message(self):
+    def test_rejected_entered_token_stops_with_a_clear_message_and_keeps_keyring(self):
+        self.keyring.set_password(csv2keep.KEYRING_SERVICE, "me@gmail.com", "kept")
         with self.assertRaises(SystemExit) as caught:
             csv2keep.login(FakeKeep(), "me@gmail.com", "bad", False)
         self.assertIn("me@gmail.com", str(caught.exception.code))
         self.assertIn("BadAuthentication", str(caught.exception.code))
+        self.assertEqual(self.saved_token(), "kept")
 
     def test_rejected_keyring_token_is_forgotten(self):
         self.keyring.set_password(csv2keep.KEYRING_SERVICE, "me@gmail.com", "stale")
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit) as caught:
             csv2keep.login(FakeKeep(), "me@gmail.com", "stale", True)
+        self.assertIn("saved token was removed", str(caught.exception.code))
         self.assertIsNone(self.saved_token())
-
-    def test_rejected_environment_token_leaves_keyring_alone(self):
-        self.keyring.set_password(csv2keep.KEYRING_SERVICE, "me@gmail.com", "kept")
-        with self.assertRaises(SystemExit):
-            csv2keep.login(FakeKeep(), "me@gmail.com", "bad", False)
-        self.assertEqual(self.saved_token(), "kept")
 
 
 if __name__ == "__main__":
