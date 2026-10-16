@@ -32,6 +32,7 @@ Run from the repository root; no Google account and no extra packages needed:
 ```
 $ python -m unittest discover tests
 ```
+Coverage (needs `pip install -r requirements-dev.txt`): `python -m pytest --cov=. --cov-report=term -q`
 - **tests/test_units.py** - unit tests for each function of both scripts, with gkeepapi and keyring replaced by in-memory fakes.
 - **tests/test_smoke.py** - runs lqm2csv.py then csv2keep.py end to end on generated .lqm files, with fake gkeepapi/keyring modules that log to files instead of calling Google.
 # Changelog From the Initial Implementation #

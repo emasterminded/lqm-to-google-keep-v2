@@ -5,3 +5,6 @@ __pycache__/
 *.lqm
 notes.csv
 /[0-9]*/
+.coverage
+htmlcov/
+.pytest_cache/
